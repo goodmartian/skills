@@ -8,6 +8,13 @@ A collection of custom skills for [Claude Code](https://claude.ai/claude-code) â
 |-------|-------------|---------|
 | [skill-installer](skills/skill-installer) | Install skills from GitHub URLs | [Install](#skill-installer) |
 
+## Quick Install
+
+```bash
+git clone https://github.com/goodmartian/skills.git
+cp -r skills/skills/skill-installer ~/.claude/skills/
+```
+
 ## Skills
 
 ### skill-installer
