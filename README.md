@@ -11,12 +11,11 @@ A collection of custom skills for [Claude Code](https://claude.ai/claude-code) â
 ## Quick Install
 
 ```bash
-# Clone and install skill-installer
 git clone https://github.com/goodmartian/skills.git
-cp -r skills/skills/skill-installer ~/.claude/skills/
+cd skills
 
-# Then use it to install other skills
-python ~/.claude/skills/skill-installer/scripts/install_skill.py <github_url> ~/.claude/skills/
+# Install any skill from GitHub
+python skills/skill-installer/scripts/install_skill.py <github_url> ~/.claude/skills/
 ```
 
 ## Skills
