@@ -25,6 +25,7 @@ import os
 import re
 import json
 import shutil
+import subprocess
 import tempfile
 import zipfile
 import argparse
@@ -235,37 +236,100 @@ def fetch_github_api(endpoint: str) -> dict:
 
 
 def download_github_folder(owner: str, repo: str, branch: str,
-                           path: str, dest_dir: Path) -> None:
-    """Download a folder from GitHub repository."""
+                           path: str, dest_dir: Path) -> bool:
+    """
+    Download a folder from GitHub repository.
+    Returns True if successful, False if failed (caller should try git fallback).
+    """
     print(f"  Fetching folder contents: {path}")
 
     try:
-        contents = fetch_github_api(
-            f"repos/{owner}/{repo}/contents/{path}?ref={branch}"
-        )
-    except urllib.error.HTTPError:
-        # Try master branch
-        contents = fetch_github_api(
-            f"repos/{owner}/{repo}/contents/{path}?ref=master"
-        )
-
-    for item in contents:
-        item_path = dest_dir / item['name']
-
-        if item['type'] == 'file':
-            download_file(item['download_url'], item_path)
-        elif item['type'] == 'dir':
-            item_path.mkdir(parents=True, exist_ok=True)
-            download_github_folder(
-                owner, repo, branch,
-                f"{path}/{item['name']}", item_path
+        try:
+            contents = fetch_github_api(
+                f"repos/{owner}/{repo}/contents/{path}?ref={branch}"
             )
+        except urllib.error.HTTPError:
+            # Try master branch
+            contents = fetch_github_api(
+                f"repos/{owner}/{repo}/contents/{path}?ref=master"
+            )
+
+        for item in contents:
+            item_path = dest_dir / item['name']
+
+            if item['type'] == 'file':
+                download_file(item['download_url'], item_path)
+            elif item['type'] == 'dir':
+                item_path.mkdir(parents=True, exist_ok=True)
+                if not download_github_folder(
+                    owner, repo, branch,
+                    f"{path}/{item['name']}", item_path
+                ):
+                    return False
+        return True
+
+    except (urllib.error.HTTPError, urllib.error.URLError) as e:
+        print(f"  ⚠️  Download failed: {e}")
+        return False
+
+
+def _run_git(args: List[str], cwd: Optional[Path] = None) -> bool:
+    """Run git command, return True if successful."""
+    try:
+        result = subprocess.run(
+            args,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        return result.returncode == 0
+    except FileNotFoundError:
+        return False
+
+
+def git_sparse_checkout(owner: str, repo: str, branch: str,
+                        path: str, dest_dir: Path) -> Optional[Path]:
+    """
+    Clone repo with sparse checkout (only specified path).
+    Fallback for when direct download fails.
+    """
+    repo_url_https = f"https://github.com/{owner}/{repo}.git"
+    repo_url_ssh = f"git@github.com:{owner}/{repo}.git"
+
+    clone_dir = dest_dir / "repo"
+
+    # Try HTTPS first, then SSH
+    for repo_url in [repo_url_https, repo_url_ssh]:
+        clone_cmd = [
+            "git", "clone",
+            "--filter=blob:none",
+            "--depth", "1",
+            "--sparse",
+            "--single-branch",
+            "--branch", branch,
+            repo_url,
+            str(clone_dir)
+        ]
+
+        if _run_git(clone_cmd):
+            # Set sparse checkout path
+            if _run_git(["git", "sparse-checkout", "set", path], cwd=clone_dir):
+                skill_path = clone_dir / path
+                if skill_path.exists():
+                    return skill_path
+
+            # Cleanup failed attempt
+            shutil.rmtree(clone_dir, ignore_errors=True)
+
+    return None
 
 
 def download_github_repo(owner: str, repo: str, branch: str,
                          dest_dir: Path) -> Path:
-    """Download entire GitHub repository as zip."""
-    zip_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/{branch}.zip"
+    """Download entire GitHub repository as zip using codeload (faster)."""
+    # Use codeload.github.com for faster downloads
+    zip_url = f"https://codeload.github.com/{owner}/{repo}/zip/{branch}"
 
     with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp:
         tmp_path = Path(tmp.name)
@@ -443,13 +507,28 @@ def install_skill(url: str, dest_path: str,
             folder_path = tmp_path / folder_name
             folder_path.mkdir(parents=True, exist_ok=True)
 
-            download_github_folder(
+            download_success = download_github_folder(
                 components['owner'],
                 components['repo'],
                 components['branch'],
                 components['path'],
                 folder_path
             )
+
+            # Fallback to git sparse checkout if download failed
+            if not download_success:
+                print("  Trying git sparse checkout...")
+                sparse_result = git_sparse_checkout(
+                    components['owner'],
+                    components['repo'],
+                    components['branch'],
+                    components['path'],
+                    tmp_path
+                )
+                if sparse_result:
+                    folder_path = sparse_result
+                else:
+                    raise ValueError("Failed to download folder (tried API and git)")
 
             # Find skill root
             skill_root = find_skill_in_folder(folder_path)
